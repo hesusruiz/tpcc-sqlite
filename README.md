@@ -1,6 +1,6 @@
 # TPC-C Benchmark for SQLite in Pure Go
 
-A high-performance Online Transaction Processing (OLTP) benchmark for SQLite written in pure Go using [`modernc.org/sqlite`](https://gitlab.com/cznic/sqlite) (no CGO required).
+An Online Transaction Processing (OLTP) benchmark for SQLite written in pure Go using [`modernc.org/sqlite`](https://gitlab.com/cznic/sqlite) (no CGO required).
 
 Inspired by the standard [TPC-C Specification](http://www.tpc.org/tpcc/) and the C implementation [rohankadekodi/tpcc-sqlite](https://github.com/rohankadekodi/tpcc-sqlite).
 
@@ -9,11 +9,11 @@ Inspired by the standard [TPC-C Specification](http://www.tpc.org/tpcc/) and the
 ## Key Features
 
 - **Pure Go**: Built with `modernc.org/sqlite`, fully cross-platform with zero C compiler or CGO dependencies.
-- **SQLite Performance Pragmas**:
+- **SQLite Pragmas**:
   - `PRAGMA journal_mode = WAL;` (Write-Ahead Logging for concurrent readers & writer)
-  - `PRAGMA synchronous = NORMAL;` (Minimal fsync overhead on commits while preserving WAL durability)
+  - `PRAGMA synchronous = NORMAL;` (Minimal fsync overhead on commits while preserving normal WAL durability)
   - `PRAGMA cache_size = -131072;` (128 MB RAM page cache)
-  - `PRAGMA busy_timeout = 10000;` (10s busy wait timeout for graceful lock contention)
+  - `PRAGMA busy_timeout = 10000;` (10s busy wait timeout for handling lock contention)
   - `PRAGMA temp_store = MEMORY;`
   - `_txlock=immediate` (Acquires write locks upfront using `BEGIN IMMEDIATE` to prevent deadlock and lock-upgrade race conditions)
 - **All 5 TPC-C Transaction Profiles**:
@@ -22,10 +22,10 @@ Inspired by the standard [TPC-C Specification](http://www.tpc.org/tpcc/) and the
   3. **Order-Status** (~4%): Read-only status inquiry for a customer's most recent order and line items.
   4. **Delivery** (~4%): Read-write batch processing of oldest unfulfilled orders across all 10 districts.
   5. **Stock-Level** (~4%): Read-only district stock count scan for low-inventory items in recent orders.
-- **Fast Data Loader**:
-  - Batched multi-row inserts inside transactions. Full 1-warehouse scale (~94 MB, 100k items, 100k stock, 30k customers, 30k orders) populates in under **4 seconds**.
+- **Data Loader**:
+  - Batched multi-row inserts inside transactions. Full 1-warehouse scale (~94 MB, 100k items, 100k stock, 30k customers, 30k orders).
   - Configurable `-scale` percentage (e.g. `-scale 10` for fast 10% scale iteration or `-scale 100` for standard).
-- **High-Precision Metrics**:
+- **Metrics**:
   - Live interval reporting (TPS, tpmC, P95, P99).
   - Summary metrics report with Min, Avg, P50, P95, P99, Max, and error counts.
   - Standard **tpmC** metric (New-Order transactions per minute).
@@ -34,9 +34,16 @@ Inspired by the standard [TPC-C Specification](http://www.tpc.org/tpcc/) and the
 
 ## Installation & Build
 
+For Linux:
+
 ```bash
 git clone https://github.com/rohankadekodi/tpcc-sqlite # or local repo
 cd tpcc-sqlite
+go build -o tpcc-sqlite .
+```
+
+For Windows, build to an .exe file
+```bash
 go build -o tpcc-sqlite.exe .
 ```
 
@@ -47,16 +54,16 @@ go build -o tpcc-sqlite.exe .
 ### Quick Start (Prepare & Benchmark)
 ```bash
 # Populate 1 warehouse and run a 30s benchmark with 4 workers
-./tpcc-sqlite.exe -w 1 -c 4 -duration 30s -warmup 5s
+./tpcc-sqlite -w 1 -c 4 -duration 30s -warmup 5s
 ```
 
 ### Separate Loading and Running
 ```bash
 # 1. Load data only (Full 100% scale)
-./tpcc-sqlite.exe -load-only -reset -db tpcc.db -w 1 -scale 100
+./tpcc-sqlite -load-only -reset -db tpcc.db -w 1 -scale 100
 
 # 2. Run benchmark against loaded database
-./tpcc-sqlite.exe -run-only -db tpcc.db -w 1 -c 4 -warmup 5s -duration 60s
+./tpcc-sqlite -run-only -db tpcc.db -w 1 -c 4 -warmup 5s -duration 60s
 ```
 
 ### Command-Line Flags
