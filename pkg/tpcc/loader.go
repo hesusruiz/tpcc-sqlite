@@ -24,11 +24,17 @@ func LoadData(db *sql.DB, cfg Config) error {
 		ordersCount = 10
 	}
 
+	totalCust := custCount * DistrictsPerWh * cfg.Warehouses
+	totalOrders := ordersCount * DistrictsPerWh * cfg.Warehouses
+	totalStock := itemCount * cfg.Warehouses
+
 	fmt.Printf("\n--- Populating TPC-C Database ---\n")
-	fmt.Printf("Warehouses:      %d\n", cfg.Warehouses)
-	fmt.Printf("Items:           %d (Scale: %d%%)\n", itemCount, cfg.ScalePercent)
-	fmt.Printf("Customers/Dist:  %d\n", custCount)
-	fmt.Printf("Orders/Dist:     %d\n", ordersCount)
+	fmt.Printf("Warehouses:          %d\n", cfg.Warehouses)
+	fmt.Printf("Districts:           %d (%d per warehouse)\n", DistrictsPerWh*cfg.Warehouses, DistrictsPerWh)
+	fmt.Printf("Items:               %d (Scale: %d%%)\n", itemCount, cfg.ScalePercent)
+	fmt.Printf("Customers/District:  %d (Total: %d)\n", custCount, totalCust)
+	fmt.Printf("Orders/District:     %d (Total: %d)\n", ordersCount, totalOrders)
+	fmt.Printf("Stock/Warehouse:     %d (Total: %d)\n", itemCount, totalStock)
 
 	// 1. Load Items
 	fmt.Print("Loading items... ")

@@ -23,7 +23,12 @@ Inspired by the standard [TPC-C Specification](http://www.tpc.org/tpcc/) and the
   4. **Delivery** (~4%): Read-write batch processing of oldest unfulfilled orders across all 10 districts.
   5. **Stock-Level** (~4%): Read-only district stock count scan for low-inventory items in recent orders.
 - **Data Loader**:
-  - Batched multi-row inserts inside transactions. Full 1-warehouse scale (~94 MB, 100k items, 100k stock, 30k customers, 30k orders).
+  - Batched multi-row inserts inside transactions. Full 1-warehouse scale (~94 MB database):
+    - **100,000 items** in the catalog table (`item`).
+    - **10 districts** per warehouse (`district`).
+    - **3,000 customers per district** = **30,000 customers** per warehouse (`customer` & `history`).
+    - **100,000 stock records** per warehouse (`stock`, 1 per item).
+    - **3,000 orders per district** = **30,000 orders** per warehouse (`orders`, `new_orders`, and ~300,000 `order_line` records).
   - Configurable `-scale` percentage (e.g. `-scale 10` for fast 10% scale iteration or `-scale 100` for standard).
 - **Metrics**:
   - Live interval reporting (TPS, tpmC, P95, P99).
@@ -37,7 +42,7 @@ Inspired by the standard [TPC-C Specification](http://www.tpc.org/tpcc/) and the
 For Linux:
 
 ```bash
-git clone https://github.com/rohankadekodi/tpcc-sqlite # or local repo
+git clone https://github.com/<YOUR_USERNAME>/tpcc-sqlite
 cd tpcc-sqlite
 go build -o tpcc-sqlite .
 ```
