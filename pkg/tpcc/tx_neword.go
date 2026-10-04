@@ -9,10 +9,9 @@ import (
 // ErrInvalidItem simulates the TPC-C 1% invalid item rollback
 var ErrInvalidItem = errors.New("tpcc: invalid item id, rolled back")
 
-// RunNewOrder executes the TPC-C New-Order transaction
-func RunNewOrder(db *sql.DB, rg *RandGen, maxW int, itemCount, custCount int) (TxResult, error) {
-	start := time.Now()
-
+// ExecNewOrder executes the New-Order business logic within an active transaction.
+// Returns (rolledBack, error). When rolledBack is true, the caller should rollback the savepoint or tx.
+func ExecNewOrder(tx *sql.Tx, rg *RandGen, maxW int, itemCount, custCount int) (bool, error) {
 	wID := rg.IntRange(1, maxW)
 	dID := rg.IntRange(1, DistrictsPerWh)
 	cID := rg.NURandCID(custCount)
@@ -47,21 +46,15 @@ func RunNewOrder(db *sql.DB, rg *RandGen, maxW int, itemCount, custCount int) (T
 		items[i].quantity = rg.IntRange(1, 10)
 	}
 
-	tx, err := db.Begin()
-	if err != nil {
-		return TxResult{TxType: TxNewOrder, Latency: time.Since(start), Err: err}, err
-	}
-	defer tx.Rollback()
-
 	// 1. Get customer discount, last name, credit, and warehouse tax
 	var cDiscount, wTax float64
 	var cLast, cCredit string
 	qCust := `SELECT c_discount, c_last, c_credit, w_tax
 	          FROM customer, warehouse
 	          WHERE w_id = ? AND c_w_id = ? AND c_d_id = ? AND c_id = ?`
-	err = tx.QueryRow(qCust, wID, wID, dID, cID).Scan(&cDiscount, &cLast, &cCredit, &wTax)
+	err := tx.QueryRow(qCust, wID, wID, dID, cID).Scan(&cDiscount, &cLast, &cCredit, &wTax)
 	if err != nil {
-		return TxResult{TxType: TxNewOrder, Latency: time.Since(start), Err: err}, err
+		return false, err
 	}
 
 	// 2. Get and increment district next_o_id
@@ -69,13 +62,13 @@ func RunNewOrder(db *sql.DB, rg *RandGen, maxW int, itemCount, custCount int) (T
 	var dTax float64
 	qDist := `SELECT d_next_o_id, d_tax FROM district WHERE d_id = ? AND d_w_id = ?`
 	if err := tx.QueryRow(qDist, dID, wID).Scan(&dNextOID, &dTax); err != nil {
-		return TxResult{TxType: TxNewOrder, Latency: time.Since(start), Err: err}, err
+		return false, err
 	}
 
 	oID := dNextOID
 	_, err = tx.Exec(`UPDATE district SET d_next_o_id = d_next_o_id + 1 WHERE d_id = ? AND d_w_id = ?`, dID, wID)
 	if err != nil {
-		return TxResult{TxType: TxNewOrder, Latency: time.Since(start), Err: err}, err
+		return false, err
 	}
 
 	// 3. Insert into orders and new_orders
@@ -83,18 +76,18 @@ func RunNewOrder(db *sql.DB, rg *RandGen, maxW int, itemCount, custCount int) (T
 	qOrder := `INSERT INTO orders (o_id, o_d_id, o_w_id, o_c_id, o_entry_d, o_carrier_id, o_ol_cnt, o_all_local)
 	           VALUES (?, ?, ?, ?, ?, 0, ?, ?)`
 	if _, err := tx.Exec(qOrder, oID, dID, wID, cID, now, olCnt, allLocal); err != nil {
-		return TxResult{TxType: TxNewOrder, Latency: time.Since(start), Err: err}, err
+		return false, err
 	}
 
 	if _, err := tx.Exec(`INSERT INTO new_orders (no_o_id, no_d_id, no_w_id) VALUES (?, ?, ?)`, oID, dID, wID); err != nil {
-		return TxResult{TxType: TxNewOrder, Latency: time.Since(start), Err: err}, err
+		return false, err
 	}
 
 	// Prepare order line statement
 	olStmt, err := tx.Prepare(`INSERT INTO order_line (ol_o_id, ol_d_id, ol_w_id, ol_number, ol_i_id, ol_supply_w_id, ol_quantity, ol_amount, ol_dist_info)
 	                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		return TxResult{TxType: TxNewOrder, Latency: time.Since(start), Err: err}, err
+		return false, err
 	}
 	defer olStmt.Close()
 
@@ -105,11 +98,10 @@ func RunNewOrder(db *sql.DB, rg *RandGen, maxW int, itemCount, custCount int) (T
 		err := tx.QueryRow(`SELECT i_price, i_name, i_data FROM item WHERE i_id = ?`, item.itemID).Scan(&iPrice, &iName, &iData)
 		if err == sql.ErrNoRows {
 			// Item not found: trigger intended rollback
-			tx.Rollback()
-			return TxResult{TxType: TxNewOrder, Latency: time.Since(start), Rollback: true}, nil
+			return true, nil
 		}
 		if err != nil {
-			return TxResult{TxType: TxNewOrder, Latency: time.Since(start), Err: err}, err
+			return false, err
 		}
 
 		// Query stock
@@ -124,7 +116,7 @@ func RunNewOrder(db *sql.DB, rg *RandGen, maxW int, itemCount, custCount int) (T
 			&sDist06, &sDist07, &sDist08, &sDist09, &sDist10,
 		)
 		if err != nil {
-			return TxResult{TxType: TxNewOrder, Latency: time.Since(start), Err: err}, err
+			return false, err
 		}
 
 		if sQuantity >= item.quantity+10 {
@@ -141,7 +133,7 @@ func RunNewOrder(db *sql.DB, rg *RandGen, maxW int, itemCount, custCount int) (T
 		_, err = tx.Exec(`UPDATE stock SET s_quantity = ?, s_order_cnt = s_order_cnt + 1, s_remote_cnt = s_remote_cnt + ?
 		                  WHERE s_i_id = ? AND s_w_id = ?`, sQuantity, remoteInc, item.itemID, item.supplyWID)
 		if err != nil {
-			return TxResult{TxType: TxNewOrder, Latency: time.Since(start), Err: err}, err
+			return false, err
 		}
 
 		distInfo := sDist01
@@ -170,8 +162,30 @@ func RunNewOrder(db *sql.DB, rg *RandGen, maxW int, itemCount, custCount int) (T
 
 		olAmount := float64(item.quantity) * iPrice * (1.0 + wTax + dTax) * (1.0 - cDiscount)
 		if _, err := olStmt.Exec(oID, dID, wID, i+1, item.itemID, item.supplyWID, item.quantity, olAmount, distInfo); err != nil {
-			return TxResult{TxType: TxNewOrder, Latency: time.Since(start), Err: err}, err
+			return false, err
 		}
+	}
+
+	return false, nil
+}
+
+// RunNewOrder executes the TPC-C New-Order transaction independently
+func RunNewOrder(db *sql.DB, rg *RandGen, maxW int, itemCount, custCount int) (TxResult, error) {
+	start := time.Now()
+
+	tx, err := db.Begin()
+	if err != nil {
+		return TxResult{TxType: TxNewOrder, Latency: time.Since(start), Err: err}, err
+	}
+	defer tx.Rollback()
+
+	rolledBack, err := ExecNewOrder(tx, rg, maxW, itemCount, custCount)
+	if err != nil {
+		return TxResult{TxType: TxNewOrder, Latency: time.Since(start), Err: err}, err
+	}
+	if rolledBack {
+		_ = tx.Rollback()
+		return TxResult{TxType: TxNewOrder, Latency: time.Since(start), Rollback: true}, nil
 	}
 
 	if err := tx.Commit(); err != nil {

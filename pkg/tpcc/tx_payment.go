@@ -6,10 +6,8 @@ import (
 	"time"
 )
 
-// RunPayment executes the TPC-C Payment transaction
-func RunPayment(db *sql.DB, rg *RandGen, maxW, custCount int) (TxResult, error) {
-	start := time.Now()
-
+// ExecPayment executes the Payment business logic within an active transaction.
+func ExecPayment(tx *sql.Tx, rg *RandGen, maxW, custCount int) error {
 	wID := rg.IntRange(1, maxW)
 	dID := rg.IntRange(1, DistrictsPerWh)
 	hAmount := rg.FloatRange(1.00, 5000.00, 2)
@@ -26,28 +24,22 @@ func RunPayment(db *sql.DB, rg *RandGen, maxW, custCount int) (TxResult, error) 
 
 	byLastName := rg.IntRange(1, 100) <= 60
 
-	tx, err := db.Begin()
-	if err != nil {
-		return TxResult{TxType: TxPayment, Latency: time.Since(start), Err: err}, err
-	}
-	defer tx.Rollback()
-
 	// 1. Update warehouse YTD and fetch name
 	if _, err := tx.Exec(`UPDATE warehouse SET w_ytd = w_ytd + ? WHERE w_id = ?`, hAmount, wID); err != nil {
-		return TxResult{TxType: TxPayment, Latency: time.Since(start), Err: err}, err
+		return err
 	}
 	var wName string
 	if err := tx.QueryRow(`SELECT w_name FROM warehouse WHERE w_id = ?`, wID).Scan(&wName); err != nil {
-		return TxResult{TxType: TxPayment, Latency: time.Since(start), Err: err}, err
+		return err
 	}
 
 	// 2. Update district YTD and fetch name
 	if _, err := tx.Exec(`UPDATE district SET d_ytd = d_ytd + ? WHERE d_w_id = ? AND d_id = ?`, hAmount, wID, dID); err != nil {
-		return TxResult{TxType: TxPayment, Latency: time.Since(start), Err: err}, err
+		return err
 	}
 	var dName string
 	if err := tx.QueryRow(`SELECT d_name FROM district WHERE d_w_id = ? AND d_id = ?`, wID, dID).Scan(&dName); err != nil {
-		return TxResult{TxType: TxPayment, Latency: time.Since(start), Err: err}, err
+		return err
 	}
 
 	// 3. Customer lookup
@@ -56,7 +48,7 @@ func RunPayment(db *sql.DB, rg *RandGen, maxW, custCount int) (TxResult, error) 
 		cLast := rg.NURandLastName()
 		rows, err := tx.Query(`SELECT c_id FROM customer WHERE c_w_id = ? AND c_d_id = ? AND c_last = ? ORDER BY c_first`, cWID, cDID, cLast)
 		if err != nil {
-			return TxResult{TxType: TxPayment, Latency: time.Since(start), Err: err}, err
+			return err
 		}
 		var cIDs []int
 		for rows.Next() {
@@ -84,11 +76,11 @@ func RunPayment(db *sql.DB, rg *RandGen, maxW, custCount int) (TxResult, error) 
 	var cPaymentCnt int
 	qCust := `SELECT c_first, c_middle, c_last, c_credit, c_credit_lim, c_discount, c_balance, c_ytd_payment, c_payment_cnt, c_data
 	          FROM customer WHERE c_w_id = ? AND c_d_id = ? AND c_id = ?`
-	err = tx.QueryRow(qCust, cWID, cDID, cID).Scan(
+	err := tx.QueryRow(qCust, cWID, cDID, cID).Scan(
 		&cFirst, &cMiddle, &cLast, &cCredit, &cCreditLim, &cDiscount, &cBalance, &cYTDPayment, &cPaymentCnt, &cData,
 	)
 	if err != nil {
-		return TxResult{TxType: TxPayment, Latency: time.Since(start), Err: err}, err
+		return err
 	}
 
 	cBalance -= hAmount
@@ -110,7 +102,7 @@ func RunPayment(db *sql.DB, rg *RandGen, maxW, custCount int) (TxResult, error) 
 			cBalance, cYTDPayment, cPaymentCnt, cWID, cDID, cID)
 	}
 	if err != nil {
-		return TxResult{TxType: TxPayment, Latency: time.Since(start), Err: err}, err
+		return err
 	}
 
 	// 6. Insert history record
@@ -122,7 +114,20 @@ func RunPayment(db *sql.DB, rg *RandGen, maxW, custCount int) (TxResult, error) 
 	_, err = tx.Exec(`INSERT INTO history (h_c_id, h_c_d_id, h_c_w_id, h_d_id, h_w_id, h_date, h_amount, h_data)
 	                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		cID, cDID, cWID, dID, wID, now, hAmount, hData)
+	return err
+}
+
+// RunPayment executes the TPC-C Payment transaction independently
+func RunPayment(db *sql.DB, rg *RandGen, maxW, custCount int) (TxResult, error) {
+	start := time.Now()
+
+	tx, err := db.Begin()
 	if err != nil {
+		return TxResult{TxType: TxPayment, Latency: time.Since(start), Err: err}, err
+	}
+	defer tx.Rollback()
+
+	if err := ExecPayment(tx, rg, maxW, custCount); err != nil {
 		return TxResult{TxType: TxPayment, Latency: time.Since(start), Err: err}, err
 	}
 

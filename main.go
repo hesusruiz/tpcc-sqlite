@@ -13,19 +13,23 @@ func main() {
 	cfg := tpcc.DefaultConfig()
 
 	var (
-		dbPath       string
-		warehouses   int
-		scalePercent int
-		threads      int
-		warmupStr    string
-		durationStr  string
-		intervalStr  string
-		cacheMB      int
-		busyTimeout  int
-		loadOnly     bool
-		runOnly      bool
-		dropExisting bool
-		resetDB      bool
+		dbPath          string
+		warehouses      int
+		scalePercent    int
+		threads         int
+		warmupStr       string
+		durationStr     string
+		intervalStr     string
+		cacheMB         int
+		busyTimeout     int
+		loadOnly        bool
+		runOnly         bool
+		dropExisting    bool
+		resetDB         bool
+		groupCommit     bool
+		batchSize       int
+		batchTimeoutStr string
+		syncMode        string
 	)
 
 	flag.StringVar(&dbPath, "db", cfg.DBPath, "Path to SQLite database file")
@@ -44,6 +48,10 @@ func main() {
 	flag.BoolVar(&runOnly, "run-only", false, "Run benchmark against existing database without loading")
 	flag.BoolVar(&dropExisting, "drop", false, "Drop existing tables before loading")
 	flag.BoolVar(&resetDB, "reset", false, "Delete existing database file and WAL before start")
+	flag.BoolVar(&groupCommit, "group-commit", false, "Enable group commit for parallel client writes")
+	flag.IntVar(&batchSize, "batch-size", 16, "Max transactions per group commit batch")
+	flag.StringVar(&batchTimeoutStr, "batch-timeout", "1ms", "Max wait duration before committing a partial batch")
+	flag.StringVar(&syncMode, "sync", "NORMAL", "SQLite synchronous pragma (NORMAL, FULL, EXTRA)")
 
 	flag.Parse()
 
@@ -62,6 +70,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Invalid interval duration: %v\n", err)
 		os.Exit(1)
 	}
+	batchTimeoutDur, err := time.ParseDuration(batchTimeoutStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid batch timeout: %v\n", err)
+		os.Exit(1)
+	}
 
 	cfg.DBPath = dbPath
 	cfg.Warehouses = warehouses
@@ -75,6 +88,10 @@ func main() {
 	cfg.LoadOnly = loadOnly
 	cfg.RunOnly = runOnly
 	cfg.DropExisting = dropExisting
+	cfg.GroupCommit = groupCommit
+	cfg.BatchSize = batchSize
+	cfg.BatchTimeout = batchTimeoutDur
+	cfg.Synchronous = syncMode
 
 	if resetDB {
 		_ = tpcc.RemoveDBFiles(cfg.DBPath)

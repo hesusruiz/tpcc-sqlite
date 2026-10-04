@@ -84,6 +84,10 @@ go build -o tpcc-sqlite.exe .
 | `-interval` | `2s` | Live progress reporting interval |
 | `-cache-mb` | `128` | SQLite cache size in MB (default: 128 MB) |
 | `-busy-timeout` | `10000` | SQLite busy timeout in ms |
+| `-group-commit` | `false` | Enable Group Commit write batching queue |
+| `-batch-size` | `16` | Max write transactions per group commit batch |
+| `-batch-timeout` | `1ms` | Max linger window before committing partial batch |
+| `-sync` | `NORMAL` | SQLite synchronous mode (`NORMAL`, `FULL`, `EXTRA`) |
 | `-load-only` | `false` | Only create schema and load data, then exit |
 | `-run-only` | `false` | Run benchmark against existing database |
 | `-drop` | `false` | Drop existing tables before loading |
@@ -131,3 +135,36 @@ Delivery       |      312 |      0 |     5.71 |     2.59 |    17.88 |    55.80
 Stock-Level    |      311 |      0 |     1.45 |     1.09 |     3.03 |     5.44
 ================================================================================
 ```
+
+---
+
+## Group Commit Architecture
+
+SQLite operates under a single-writer concurrency model: even in WAL mode, only one thread can hold the write lock at any time. In a multi-client server, multiple clients running independent transactions cause frequent lock contention, context switches, and repeated transaction commit overhead.
+
+### How Group Commit Works
+
+When enabled with `-group-commit`:
+1. **Request Queue**: Client goroutines submitting write transactions (`New-Order`, `Payment`, `Delivery`) send their requests to a non-blocking queue.
+2. **Adaptive Batching**: A dedicated writer collects up to `-batch-size` (default: 16) requests or waits up to `-batch-timeout` (default: 1ms).
+3. **Single Transaction**: The batch executes within a single `BEGIN IMMEDIATE` ... `COMMIT` cycle.
+4. **Savepoint Isolation**: Each client request runs inside an internal SQLite `SAVEPOINT`. If an application-level rollback occurs (such as the 1% invalid item test in TPC-C New-Order), only that request's savepoint is rolled back—the rest of the batch commits cleanly.
+5. **Durability Guarantee Preserved**: Each client's call blocks until the batch `COMMIT` successfully flushes to the WAL. Uncommitted transactions are never acknowledged.
+6. **Concurrent Readers**: Read-only transactions (`Order-Status`, `Stock-Level`) bypass the queue and run concurrently against reader connections.
+
+### Direct Mode vs. Group Commit Comparison (8 Workers, 1 Warehouse, 100% Scale)
+
+| Metric | `sync=NORMAL` Direct | `sync=NORMAL` Group Commit | `sync=FULL` Direct | `sync=FULL` Group Commit |
+|---|---|---|---|---|
+| **Total Throughput** | 1,075 TPS | 1,030 TPS | 463 TPS | **875 TPS (+89%)** |
+| **tpmC (New-Order)** | 29,076 | 27,138 | 13,190 | **22,790 (+73%)** |
+| **New-Order P50** | 1.04 ms | 5.63 ms | 2.70 ms | 7.85 ms |
+| **New-Order P95** | 16.18 ms | 35.10 ms | 17.87 ms | 28.42 ms |
+| **New-Order P99** | 79.52 ms | **42.98 ms (-46%)** | 542.08 ms | **34.29 ms (-94%)** |
+| **Payment P99** | 81.55 ms | **40.87 ms (-50%)** | 443.82 ms | **31.42 ms (-93%)** |
+| **Delivery P99** | 139.28 ms | **44.88 ms (-68%)** | 90.02 ms | **40.69 ms (-55%)** |
+
+**Key Takeaways**:
+- **Under `sync=NORMAL`**: Group Commit smooths out tail latency spikes (P99 reduced by up to 50–68%) by preventing connection starvation in SQLite's lock queue, at the cost of a slight increase in median latency (P50) to form batches.
+- **Under `sync=FULL` (Strict fsync Durability)**: Group Commit delivers **nearly 2x throughput (+89%)** and slashes P99 tail latency by **over 15x** (from 542ms down to 34ms) by amortizing fsync overhead across entire batches.
+

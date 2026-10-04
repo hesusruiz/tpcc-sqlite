@@ -9,11 +9,12 @@ import (
 
 // BenchmarkDriver coordinates concurrent worker goroutines and workload execution
 type BenchmarkDriver struct {
-	db        *sql.DB
-	cfg       Config
-	stats     *StatsCollector
-	itemCount int
-	custCount int
+	db          *sql.DB
+	cfg         Config
+	stats       *StatsCollector
+	itemCount   int
+	custCount   int
+	groupCommit *GroupCommitQueue
 }
 
 // NewBenchmarkDriver creates a new driver instance
@@ -27,17 +28,28 @@ func NewBenchmarkDriver(db *sql.DB, cfg Config) *BenchmarkDriver {
 		custCount = 10
 	}
 
+	var gc *GroupCommitQueue
+	if cfg.GroupCommit {
+		gc = NewGroupCommitQueue(db, cfg.BatchSize, cfg.BatchTimeout)
+	}
+
 	return &BenchmarkDriver{
-		db:        db,
-		cfg:       cfg,
-		stats:     NewStatsCollector(),
-		itemCount: itemCount,
-		custCount: custCount,
+		db:          db,
+		cfg:         cfg,
+		stats:       NewStatsCollector(),
+		itemCount:   itemCount,
+		custCount:   custCount,
+		groupCommit: gc,
 	}
 }
 
 // Run executes the warmup, benchmark measurement, and reports statistics
 func (d *BenchmarkDriver) Run() error {
+	syncMode := d.cfg.Synchronous
+	if syncMode == "" {
+		syncMode = "NORMAL"
+	}
+
 	fmt.Printf("\n--- Starting TPC-C Benchmark ---\n")
 	fmt.Printf("Database:       %s\n", d.cfg.DBPath)
 	fmt.Printf("Warehouses:     %d\n", d.cfg.Warehouses)
@@ -45,7 +57,16 @@ func (d *BenchmarkDriver) Run() error {
 	fmt.Printf("Warmup:         %v\n", d.cfg.WarmupTime)
 	fmt.Printf("Duration:       %v\n", d.cfg.Duration)
 	fmt.Printf("Cache Size:     %d MB\n", d.cfg.CacheSizeMB)
-	fmt.Printf("Journal Mode:   WAL (sync: NORMAL)\n\n")
+	fmt.Printf("Journal Mode:   WAL (sync: %s)\n", syncMode)
+	if d.cfg.GroupCommit {
+		fmt.Printf("Group Commit:   ENABLED (batch_size: %d, timeout: %v)\n\n", d.cfg.BatchSize, d.cfg.BatchTimeout)
+	} else {
+		fmt.Printf("Group Commit:   DISABLED (direct concurrent transactions)\n\n")
+	}
+
+	if d.groupCommit != nil {
+		defer d.groupCommit.Stop()
+	}
 
 	stopChan := make(chan struct{})
 	var wg sync.WaitGroup
@@ -110,14 +131,36 @@ func (d *BenchmarkDriver) worker(id int, stopChan <-chan struct{}, wg *sync.Wait
 
 		switch {
 		case roll <= 45:
-			res, err = RunNewOrder(d.db, rg, d.cfg.Warehouses, d.itemCount, d.custCount)
+			if d.groupCommit != nil {
+				res = d.groupCommit.Submit(TxNewOrder, func(tx *sql.Tx) (bool, error) {
+					return ExecNewOrder(tx, rg, d.cfg.Warehouses, d.itemCount, d.custCount)
+				})
+			} else {
+				res, err = RunNewOrder(d.db, rg, d.cfg.Warehouses, d.itemCount, d.custCount)
+			}
 		case roll <= 88:
-			res, err = RunPayment(d.db, rg, d.cfg.Warehouses, d.custCount)
+			if d.groupCommit != nil {
+				res = d.groupCommit.Submit(TxPayment, func(tx *sql.Tx) (bool, error) {
+					err := ExecPayment(tx, rg, d.cfg.Warehouses, d.custCount)
+					return false, err
+				})
+			} else {
+				res, err = RunPayment(d.db, rg, d.cfg.Warehouses, d.custCount)
+			}
 		case roll <= 92:
+			// Read-only: runs concurrently against db
 			res, err = RunOrderStatus(d.db, rg, d.cfg.Warehouses, d.custCount)
 		case roll <= 96:
-			res, err = RunDelivery(d.db, rg, d.cfg.Warehouses)
+			if d.groupCommit != nil {
+				res = d.groupCommit.Submit(TxDelivery, func(tx *sql.Tx) (bool, error) {
+					err := ExecDelivery(tx, rg, d.cfg.Warehouses)
+					return false, err
+				})
+			} else {
+				res, err = RunDelivery(d.db, rg, d.cfg.Warehouses)
+			}
 		default:
+			// Read-only: runs concurrently against db
 			res, err = RunStockLevel(d.db, rg, d.cfg.Warehouses)
 		}
 

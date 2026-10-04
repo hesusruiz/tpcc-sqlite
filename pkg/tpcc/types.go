@@ -37,6 +37,10 @@ type Config struct {
 	DropExisting  bool          // Drop existing tables before loading
 	LoadOnly      bool          // Only run data loading and exit
 	RunOnly       bool          // Only run benchmark (assume DB loaded)
+	GroupCommit   bool          // Enable group commit for parallel client writes
+	BatchSize     int           // Max transactions per group commit batch
+	BatchTimeout  time.Duration // Max wait duration before committing a partial batch
+	Synchronous   string        // SQLite synchronous pragma ("NORMAL", "FULL", "EXTRA")
 }
 
 // DefaultConfig returns reasonable defaults for SQLite TPC-C
@@ -54,6 +58,10 @@ func DefaultConfig() Config {
 		DropExisting:   false,
 		LoadOnly:       false,
 		RunOnly:        false,
+		GroupCommit:    false,
+		BatchSize:      16,
+		BatchTimeout:   1 * time.Millisecond,
+		Synchronous:    "NORMAL",
 	}
 }
 

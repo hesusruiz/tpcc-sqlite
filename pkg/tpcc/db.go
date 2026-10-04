@@ -18,9 +18,14 @@ func OpenDB(cfg Config) (*sql.DB, error) {
 		cacheSizeKiB = 131072 // Default to 128MB
 	}
 
+	syncMode := cfg.Synchronous
+	if syncMode == "" {
+		syncMode = "NORMAL"
+	}
+
 	q := url.Values{}
 	q.Add("_pragma", "journal_mode(WAL)")
-	q.Add("_pragma", "synchronous(NORMAL)")
+	q.Add("_pragma", fmt.Sprintf("synchronous(%s)", syncMode))
 	q.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", cfg.BusyTimeoutMS))
 	q.Add("_pragma", fmt.Sprintf("cache_size(-%d)", cacheSizeKiB))
 	q.Add("_pragma", "temp_store(MEMORY)")
@@ -52,7 +57,7 @@ func OpenDB(cfg Config) (*sql.DB, error) {
 	// Ensure WAL mode and synchronous are definitely applied to the primary DB
 	initPragmas := []string{
 		"PRAGMA journal_mode = WAL;",
-		"PRAGMA synchronous = NORMAL;",
+		fmt.Sprintf("PRAGMA synchronous = %s;", syncMode),
 		fmt.Sprintf("PRAGMA busy_timeout = %d;", cfg.BusyTimeoutMS),
 		fmt.Sprintf("PRAGMA cache_size = -%d;", cacheSizeKiB),
 		"PRAGMA temp_store = MEMORY;",
