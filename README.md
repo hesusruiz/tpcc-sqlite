@@ -67,8 +67,14 @@ go build -o tpcc-sqlite.exe .
 # 1. Load data only (Full 100% scale)
 ./tpcc-sqlite -load-only -reset -db tpcc.db -w 1 -scale 100
 
-# 2. Run benchmark against loaded database
+# 2. Run benchmark against loaded database (Direct mode, 4 workers)
 ./tpcc-sqlite -run-only -db tpcc.db -w 1 -c 4 -warmup 5s -duration 60s
+
+# 3. Run benchmark with Group Commit enabled (8 workers, 16-batch queue)
+./tpcc-sqlite -run-only -db tpcc.db -w 1 -c 8 -duration 60s -group-commit -batch-size 16 -batch-timeout 1ms
+
+# 4. Run benchmark with strict per-commit disk durability (sync=FULL) and Group Commit
+./tpcc-sqlite -run-only -db tpcc.db -w 1 -c 8 -duration 60s -sync FULL -group-commit -batch-size 16 -batch-timeout 2ms
 ```
 
 ### Command-Line Flags
